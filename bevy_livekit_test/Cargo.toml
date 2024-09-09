@@ -1,0 +1,16 @@
+[package]
+name = "bevy_livekit_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.14.2"
+bevy_egui = "0.28.0"
+tokio = { version = "1", features = ["full"]}
+flume = "0.11.0"
+image = "0.25.2"
+livekit = { version = "0.6.0", features = ["native-tls"]}
+livekit-api = "0.4.0"
+
+parking_lot = "0.12.3"
+async-std = "1"

@@ -1,0 +1,3 @@
+/.cargo
+.env
+bevy_livekit_test/target

@@ -1,0 +1,179 @@
+use std::io::Write;
+
+use image::ImageFormat;
+use image::RgbaImage;
+use livekit::options::TrackPublishOptions;
+use livekit::prelude::*;
+use livekit::webrtc::native::yuv_helper;
+use livekit::webrtc::prelude::VideoBuffer;
+use livekit::webrtc::video_source::RtcVideoSource;
+use livekit::webrtc::video_source::VideoResolution;
+use livekit::webrtc::{
+    video_frame::{I420Buffer, VideoFrame, VideoRotation},
+    video_source::native::NativeVideoSource,
+};
+use parking_lot::Mutex;
+use std::sync::Arc;
+use std::time::Duration;
+
+pub const FB_WIDTH: usize = 512;
+pub const FB_HEIGHT: usize = 256;
+
+#[derive(Clone)]
+struct FrameData {
+    framebuffer: Arc<Mutex<Vec<u8>>>,
+    video_frame: Arc<Mutex<VideoFrame<I420Buffer>>>,
+}
+
+struct TrackHandle {
+    close_tx: flume::Sender<bool>,
+    track: LocalVideoTrack,
+}
+
+pub struct DeviceVideoTrack {
+    rtc_source: NativeVideoSource,
+    room: Arc<Room>,
+    handle: Option<TrackHandle>,
+}
+
+impl DeviceVideoTrack {
+    pub fn new(room: Arc<Room>) -> Self {
+        Self {
+            rtc_source: NativeVideoSource::new(VideoResolution {
+                width: FB_WIDTH as u32,
+                height: FB_HEIGHT as u32,
+            }),
+            room,
+            handle: None,
+        }
+    }
+
+    pub async fn publish(&mut self, track_name: &str) -> Result<(), RoomError> {
+
+        self.unpublish().await;
+
+        let (close_sender, close_receiver) = flume::bounded(1);
+        let track = LocalVideoTrack::create_video_track(
+            &track_name,
+            RtcVideoSource::Native(self.rtc_source.clone()),
+        );
+
+        match self.room
+        .local_participant()
+        .publish_track(
+            LocalTrack::Video(track.clone()),
+            TrackPublishOptions {
+                source: TrackSource::Screenshare,
+                ..Default::default()
+            },
+        )
+        .await {
+            Ok(local_track_publication) => {
+                if let Some(LocalTrack::Video(local_video_track)) = local_track_publication.track() {
+                    if let RtcVideoSource::Native(source) = local_video_track.rtc_source() {
+                        std::thread::spawn(move || {
+                            Self::track_task(close_receiver, source);
+                        });
+                    }
+                }
+            },
+            Err(e) => println!("{:?}", e)
+        }
+
+        let handle = TrackHandle {
+            close_tx: close_sender,
+            track,
+        };
+
+        self.handle = Some(handle);
+        Ok(())
+    }
+
+    pub async fn unpublish(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
+
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.close_tx.send(true);
+
+            let _ = self.room
+            .local_participant()
+            .unpublish_track(&handle.track.sid())
+            .await;
+        }
+    }
+
+    fn track_task(close_receiver: flume::Receiver<bool>, source: NativeVideoSource) {
+
+        let image = image::load_from_memory_with_format(include_bytes!("1.png"), ImageFormat::Png)
+        .unwrap()
+        .to_rgba8();
+
+        let image_data = image.as_raw();
+        let image_width = image.width();
+        let image_stride = (image_width * 4) as usize;
+        let image_height = image.height();
+
+        let data = FrameData {
+            framebuffer: Arc::new(Mutex::new(vec![0u8; FB_WIDTH * FB_HEIGHT * 4])),
+            video_frame: Arc::new(Mutex::new(VideoFrame {
+                rotation: VideoRotation::VideoRotation0,
+                buffer: I420Buffer::new(FB_WIDTH as u32, FB_HEIGHT as u32),
+                timestamp_us: 0,
+            }))
+        };
+       
+        let duration = Duration::from_millis(1000 / 15);
+        loop {
+            if let Ok(stop) = close_receiver.try_recv() {
+                if stop {
+                    println!("stop track_task");
+                    break;
+                }
+            }
+
+            let mut framebuffer = data.framebuffer.lock();
+            let mut video_frame = data.video_frame.lock();
+
+            if video_frame.buffer.width().ne(&image_width) || video_frame.buffer.height().ne(&image_height) {
+                framebuffer.resize(image_stride * image_height as usize, 0);
+                video_frame.buffer = I420Buffer::new(image_width, image_height);
+            }
+            
+            let (stride_y, stride_u, stride_v) = video_frame.buffer.strides();
+            let (data_y, data_u, data_v) = video_frame.buffer.data_mut();
+
+            for y in 0..image_height as usize {
+                let img_start = y * image_stride;
+                framebuffer[img_start..img_start + image_stride]
+                    .copy_from_slice(&image_data[img_start..img_start + image_stride]);
+            }
+
+            yuv_helper::abgr_to_i420(
+                &framebuffer,
+                image_stride as u32,
+                data_y,
+                stride_y,
+                data_u,
+                stride_u,
+                data_v,
+                stride_v,
+                image_width as i32,
+                image_height as i32,
+            );
+
+            source.capture_frame::<I420Buffer>(&video_frame);
+
+            std::thread::sleep(duration);
+        }
+    }
+}
+
+impl Drop for DeviceVideoTrack {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.close_tx.send(true);
+        }
+    }
+}
