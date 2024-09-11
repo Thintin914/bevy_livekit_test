@@ -1,26 +1,15 @@
 use bevy::prelude::*;
+use livekit::RoomEvent;
 
-use super::RTCResource;
+use super::{service::ConnectionState, LKResource};
 
-pub fn wait_room_created(mut rtc_resource: ResMut<RTCResource>) {
-    if rtc_resource.is_multiplayer() {
-        return;
-    }
-
-    if let Some(room_receiver) = &rtc_resource.room_receiver {
-        if let Ok(room_arc) = room_receiver.try_recv() {
-            println!("room set");
-            rtc_resource.room = Some(room_arc);
-        }
-    }
-}
-
-pub fn on_event_received(rtc_resource: Res<RTCResource>){
-    if let Some(room_event_receiver) = &rtc_resource.room_event {
-        if let Ok(room_event) = room_event_receiver.try_recv() {
-            println!("----------");
-            match room_event {
-                _ => {println!("{:?}", room_event)}
+pub fn on_room_event_received(mut lk_resource: ResMut<LKResource>){
+    if let Some(lk_service) = &lk_resource.service.lock().as_ref() {
+        if let Some(event_receiver) = lk_service.event_receiver.lock().as_ref() {
+            if let Ok(room_event) = event_receiver.try_recv() {
+                match room_event {
+                    _ => println!("{:?}", room_event)
+                }
             }
         }
     }

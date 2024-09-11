@@ -1,21 +1,20 @@
 use bevy::prelude::*;
 
-mod resource;
-pub use resource::RTCResource;
-
+mod service;
 mod video;
-mod video_renderer;
+
+mod resource;
+pub use resource::*;
 
 mod systems;
-use systems::*;
+pub use systems::*;
 
-pub struct LivekitPlugin;
+pub struct LKPlugin;
 
-impl Plugin for LivekitPlugin {
+impl Plugin for LKPlugin {
     fn build(&self, app: &mut App) {
         app
-        .init_resource::<RTCResource>()
-        .add_systems(Update, wait_room_created)
-        .add_systems(Update, on_event_received);
+        .init_resource::<LKResource>()
+        .add_systems(Update, on_room_event_received);
     }
 }
